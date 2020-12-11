@@ -1,0 +1,304 @@
+---
+title: "Homework2"
+author: "Toygar Emre"
+date: "04 12 2020"
+output: html_document
+---
+
+
+```{r}
+#Upload libraries and read datas
+suppressMessages(library(tidyverse))
+suppressMessages(library(plot3D))
+suppressMessages(library(rgl))
+
+X.Train<-read.table(file="uWaveGestureLibrary_X_TRAIN") %>% as_tibble()
+Y.Train<-read.table(file="uWaveGestureLibrary_Y_TRAIN") %>% as_tibble()
+Z.Train<-read.table(file="uWaveGestureLibrary_Z_TRAIN") %>% as_tibble()
+```
+
+QUESTION PART A
+
+```{r}
+sort(unique(X.Train$V1)) #Find unique classes
+
+```
+
+Given class no, first row number(instance) for the class will be chosen as a sample.
+```{r}
+Random.Instance<-function(class.no){
+  row.no<-first(which(X.Train$V1==class.no)) 
+  Gesture<-as.data.frame(cbind(t(X.Train[row.no,]),t(Y.Train[row.no,]),t(Z.Train[row.no,]))) #For 3D purpose we bind columns
+  colnames(Gesture)<-c("X","Y","Z")
+  Gesture<-Gesture[-1,]#First row is class info. We do not need it
+  rownames(Gesture)<-NULL
+  Gesture.v<-as_tibble(apply(Gesture,2,cumsum))#Acceleration to velocity transformation
+  
+  return(Gesture.v)
+}
+par(mar=c(1,1,1,1))
+
+```
+
+1st Class
+
+```{r}
+res<-Random.Instance(1)
+res %>% head
+plot3D::scatter3D(x = res$X,y = res$Y,z = res$Z,col = "blue",type="l",xlab = "x",ylab = "y",zlab = "z") 
+
+#With below one new window will be opened and you can check 3D object with rotations.
+#However for homework we will use the above one
+#rgl::plot3d(x = res$X,y = res$Y,z = res$Z,type = "l" ,col = "blue",xlab = "x",ylab = "y",zlab = "z")
+
+```
+
+2nd Class
+```{r}
+res<-Random.Instance(2)
+plot3D::scatter3D(x = res$X,y = res$Y,z = res$Z,col = "blue",type="l",xlab = "x",ylab = "y",zlab = "z") 
+```
+
+3rd Class
+```{r}
+res<-Random.Instance(3)
+plot3D::scatter3D(x = res$X,y = res$Y,z = res$Z,col = "blue",type="l",xlab = "x",ylab = "y",zlab = "z") 
+
+```
+
+4th Class
+```{r}
+res<-Random.Instance(4)
+plot3D::scatter3D(x = res$X,y = res$Y,z = res$Z,col = "blue",type="l",xlab = "x",ylab = "y",zlab = "z") 
+```
+
+5th Class
+```{r}
+res<-Random.Instance(5)
+plot3D::scatter3D(x = res$X,y = res$Y,z = res$Z,col = "blue",type="l",xlab = "x",ylab = "y",zlab = "z") 
+```
+
+6th Class
+```{r}
+res<-Random.Instance(6)
+plot3D::scatter3D(x = res$X,y = res$Y,z = res$Z,col = "blue",type="l",xlab = "x",ylab = "y",zlab = "z") 
+```
+
+7th Class
+```{r}
+res<-Random.Instance(7)
+plot3D::scatter3D(x = res$X,y = res$Y,z = res$Z,col = "blue",type="l",xlab = "x",ylab = "y",zlab = "z") 
+```
+
+8th Class
+```{r}
+res<-Random.Instance(8)
+plot3D::scatter3D(x = res$X,y = res$Y,z = res$Z,col = "blue",type="l",xlab = "x",ylab = "y",zlab = "z")
+```
+
+QUESTION PART B
+```{r}
+new.X.Train<-X.Train %>% rename(class=V1) %>% 
+  mutate(time.series.id=row_number()) %>% 
+  gather(key = "time.index",value = "X",-c(1,ncol(.)))
+new.X.Train %>% head
+
+new.Y.Train<-Y.Train %>% rename(class=V1) %>% 
+  mutate(time.series.id=row_number()) %>% 
+  gather(key = "time.index",value = "Y",-c(1,ncol(.)))
+
+new.Z.Train<-Z.Train %>% rename(class=V1) %>% 
+  mutate(time.series.id=row_number()) %>% 
+  gather(key = "time.index",value = "Z",-c(1,ncol(.)))
+
+Long.Data<-full_join(new.X.Train,new.Y.Train,by=c("class","time.series.id","time.index")) %>% 
+  full_join(new.Z.Train,by=c("class","time.series.id","time.index")) %>% #Join 3 axis together
+  separate(time.index,c("V","time.index"),sep = "(?<=V) ?(?=[0-9])") %>% select(-V) %>% #Column names are V2,V3... 
+  mutate(time.index=as.numeric(time.index)-1) %>% #we remove V and stay with the number
+  arrange(time.series.id,class,time.index) %>% 
+  select(time.series.id,time.index,X,Y,Z,class)
+
+Long.Data %>% head
+Long.Data %>% tail
+
+```
+
+```{r}
+#Apply PCA
+pca.data<-Long.Data %>% select(X,Y,Z) %>% as.matrix()
+pca.res<-prcomp(pca.data,center = T,scale. = T)$rotation %>% as_tibble()
+pca.res
+
+```
+
+```{r}
+#Create PC1 values using PCA weights
+PC1<-pca.data%*%pca.res$PC1 %>% as_tibble(.name_repair = "minimal")
+colnames(PC1)<-"PC1"
+
+pca.final<-Long.Data %>% select(time.series.id,time.index,class) %>% bind_cols(PC1) 
+pca.final %>% head
+```
+
+
+```{r}
+#Randomly select 2 time series from each class
+random.sample<-2
+pca.test<-pca.final %>% select(class,time.series.id) %>% unique() %>% 
+  group_by(class) %>% 
+  mutate(row.no=row_number(),
+         maxrow.no=max(row.no)) %>% 
+  filter(row.no %in% sample(1:maxrow.no[1],random.sample)) %>% 
+  ungroup()
+
+pca.final %>% filter(time.series.id %in% pca.test$time.series.id) %>% 
+  mutate(class=as.character(class)) %>% 
+  ggplot(aes(x=time.index, y=PC1,group=time.series.id, colour=class)) +
+  geom_line()
+
+```
+
+This is a bit confusing so we remove time.series.id info. In this way, two samples from each class will create areas.
+
+```{r}
+pca.final %>% filter(time.series.id %in% pca.test$time.series.id) %>% 
+  mutate(class=as.character(class)) %>% 
+  ggplot(aes(x=time.index, y=PC1, colour=class)) +
+  geom_line()
+
+```
+
+
+With geom_smooth it may be easy to visualize
+
+```{r}
+pca.final %>% filter(time.series.id %in% pca.test$time.series.id) %>% 
+  mutate(class=as.character(class)) %>% 
+  ggplot(aes(x=time.index, y=PC1, colour=class)) +
+  geom_smooth(stat = "identity")
+
+```
+
+We think classes can be separated with PCA as can be seen from the plots. It looks like each of them has unique pattern.
+
+
+QUESTION PART C
+
+1st Class
+```{r}
+pca.tmp<-Long.Data %>% filter(class==1) %>% 
+  select(X,Y,Z) %>% as.matrix()
+pca.res<-prcomp(pca.tmp,center = T,scale.=T)
+pca.res$rotation
+summary(pca.res)
+```
+
+2nd Class
+```{r}
+pca.tmp<-Long.Data %>% filter(class==2) %>% 
+  select(X,Y,Z) %>% as.matrix()
+pca.res<-prcomp(pca.tmp,center = T,scale.=T)
+pca.res$rotation
+summary(pca.res)
+```
+
+3rd Class
+```{r}
+pca.tmp<-Long.Data %>% filter(class==3) %>% 
+  select(X,Y,Z) %>% as.matrix()
+pca.res<-prcomp(pca.tmp,center = T,scale.=T)
+pca.res$rotation
+summary(pca.res)
+```
+
+
+4th Class
+```{r}
+pca.tmp<-Long.Data %>% filter(class==4) %>% 
+  select(X,Y,Z) %>% as.matrix()
+pca.res<-prcomp(pca.tmp,center = T,scale.=T)
+pca.res$rotation
+summary(pca.res)
+```
+
+5th Class
+```{r}
+pca.tmp<-Long.Data %>% filter(class==5) %>% 
+  select(X,Y,Z) %>% as.matrix()
+pca.res<-prcomp(pca.tmp,center = T,scale.=T)
+pca.res$rotation
+summary(pca.res)
+```
+
+6th Class
+```{r}
+pca.tmp<-Long.Data %>% filter(class==6) %>% 
+  select(X,Y,Z) %>% as.matrix()
+pca.res<-prcomp(pca.tmp,center = T,scale.=T)
+pca.res$rotation
+summary(pca.res)
+
+```
+
+7th Class
+```{r}
+pca.tmp<-Long.Data %>% filter(class==7) %>% 
+  select(X,Y,Z) %>% as.matrix()
+pca.res<-prcomp(pca.tmp,center = T,scale.=T)
+pca.res$rotation
+summary(pca.res)
+```
+
+8th Class
+```{r}
+pca.tmp<-Long.Data %>% filter(class==8) %>% 
+  select(X,Y,Z) %>% as.matrix()
+pca.res<-prcomp(pca.tmp,center = T,scale.=T)
+pca.res$rotation
+summary(pca.res)
+```
+
+With first component, more than 50% of variance is covered for each class.
+I think this is an important indication that pca is useful to if one wants to reduce feature space for this type of gesture data.
+There are some patterns in the values of first components.
+For example, first components of 3rd and 4th classes; 2nd, 5th and 7th classes; 1st and 8th classes are similar to each other.
+
+
+QUESTION PART D
+
+```{r}
+X.Train.dist<-as.matrix(X.Train[,-1])
+Y.Train.dist<-as.matrix(Y.Train[,-1])
+Z.Train.dist<-as.matrix(Z.Train[,-1])
+classes<-X.Train[,1]
+colnames(classes)<-"class"
+
+colnames(X.Train.dist)<-paste0("V",1:ncol(X.Train.dist))
+colnames(Y.Train.dist)<-paste0("V",1:ncol(Y.Train.dist))
+colnames(Z.Train.dist)<-paste0("V",1:ncol(Z.Train.dist))
+
+#Calculate distances between time series (rows)
+dist.X<-dist(x=X.Train.dist,method = "euclidean",diag = T,upper = T) %>% as.matrix()
+dist.Y<-dist(x=Y.Train.dist,method = "euclidean",diag = T,upper = T) %>% as.matrix()
+dist.Z<-dist(x=Z.Train.dist,method = "euclidean",diag = T,upper = T) %>% as.matrix()
+
+dist.all<-dist.X+dist.Y+dist.Z #Sum them up
+
+#Multidimensional scaling to represent on 2d space
+Scaled2d<-cmdscale(dist.all,k = 2) %>% as_tibble(.name_repair="minimal")
+colnames(Scaled2d)<-c("X","Y")
+Scaled2d %>% head()
+```
+
+Visualization
+```{r}
+Scaled2d %>%
+  bind_cols(classes) %>% 
+  mutate(class=as.character(class)) %>% 
+  ggplot(aes(x=X,y=Y,colour=class))+
+  geom_point(size=3)
+
+```
+
+As can be seen from the plot, classes are grouped together meaning that samples within classes are close.
+In other words, multidimensional scaling works for separating classes.
