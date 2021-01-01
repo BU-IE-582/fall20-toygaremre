@@ -4,3 +4,6 @@
 
 ##[Here](files/HW2_rmd.html) include my R code document for Homework 2 in html type, you can take a look at the HW2 html file for relevant tasks.
 
+##[Here](files/HW3_rmd.html) include my R code document for Homework 3 in html type, you can take a look at the HW3 html file for relevant tasks.
+
+
