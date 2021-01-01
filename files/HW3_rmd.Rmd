@@ -1,0 +1,467 @@
+---
+title: "Homework 3"
+author: "Toygar Emre"
+date: "31 12 2020"
+output: html_document
+---
+
+```{r }
+library(tidyverse,quietly = T)
+library(lubridate,quietly = T)
+library(doSNOW,quietly = T)
+
+# Our performance metric
+mape_fnc<-function(actual,prediction){
+  if(length(actual)==length(prediction)){
+    tmp<-sum(abs((actual-prediction)/actual))/length(actual)*100
+    return(tmp)
+  }else{
+    return(0)
+    print("lengths are not equal")
+  }
+}
+
+
+```
+
+
+Uploading Data
+```{r}
+rawdat<-read.csv("GercekZamanliTuketim-01012016-01122020.csv") %>% as_tibble()
+colnames(rawdat)<-c("Date","Hour","Consumption")
+
+rawdat<-rawdat %>% 
+  mutate(Consumption=gsub(".", "", Consumption, fixed = TRUE),
+         Consumption=gsub(",", ".", Consumption, fixed = TRUE),
+         Consumption=as.numeric(Consumption),
+         Date=as.Date(Date,format="%d.%m.%Y")) %>% 
+  separate(Hour,c("Hour","Minute")) %>% 
+  mutate(Hour=as.numeric(Hour)) %>% 
+  arrange(Date)
+rawdat %>% head
+
+```
+
+
+Checking if data has some problems
+```{r}
+unique(rawdat$Minute)
+#So we can remove Minute column since it is unimportant
+rawdat<-select(rawdat,-Minute)
+```
+
+```{r}
+unique(rawdat$Hour)
+plot(x=unique(rawdat$Date),y=1:length(unique(rawdat$Date)),ylab="index",xlab="Date")
+#Everything seems fine
+
+```
+
+```{r}
+identical(unique(rawdat$Date),seq.Date(from = as.Date("2016-01-01"),to = as.Date("2020-12-01"),by="day"))
+#So we have every day from start to end. no missing and excess values
+```
+
+PART A
+
+```{r}
+#We delete the day if has noisy data
+#For some dates, we check if there is more than 1 unique hour
+dat<-rawdat %>% group_by(Date,Hour) %>% 
+  mutate(n_Hour=n()) %>% 
+  group_by(Date) %>% 
+  mutate(n_Hour=max(n_Hour)) %>% 
+  ungroup()
+unique(dat$n_Hour)
+#Yes there are and we would like to remove those days from the data
+#However we need 2 and 7 days lag. Therefore, before removing we need to take lag
+
+```
+
+```{r}
+dat.longer<-dat %>% 
+  arrange(Date,Hour) %>% 
+  group_by(Hour) %>% 
+  mutate(Lag_48=dplyr::lag(Consumption,n=2),
+         Lag_168=dplyr::lag(Consumption,n=7)) %>% 
+  ungroup()
+
+noisy.dates<-dat.longer %>% filter(n_Hour!=1) %>% pull(Date) %>% unique()
+noisy.dates
+```
+```{r}
+# Only 1 date is noisy but it affects the following 2 and 7 days 
+# So I also removed the following 2 and 7 days.
+dat.longer<-dat.longer %>% filter(!(Date %in% c(noisy.dates,noisy.dates+2,noisy.dates+7))) %>% 
+  select(Date,Hour,Lag_48,Lag_168,Consumption) %>% 
+  filter(Date>"2016-01-07")
+#Before 2016-01-07 there are NA values. We would like remove those ones.
+dat.longer %>% head
+```
+
+```{r}
+train.dat<-dat.longer %>% filter(Date<"2020-11-01")
+test.dat<-dat.longer %>% filter(Date>="2020-11-01")
+
+Predictions.all<-test.dat
+
+mape_res48_parta<-mape_fnc(actual = test.dat$Consumption,prediction = test.dat$Lag_48)
+mape_res168_parta<-mape_fnc(actual = test.dat$Consumption,prediction = test.dat$Lag_168)
+paste0("MAPE for 48 hour lag is ",round(mape_res48_parta,2)," %")
+paste0("MAPE for 168 hour lag is ",round(mape_res168_parta,2)," %")
+
+
+```
+7 days lag seems to give better forecast than 2 days lag.
+We can say that there is a day of week effect and time of day effect in electricity consumption.
+In the homework it is explained that seasonality takes a crucial place and our mape values 
+proves that situation. While 2 days only includes time of day effect, 7 days includes both time of day and day of week.
+So both seasonality is important.
+
+PART B
+```{r}
+train.fit<-lm(formula = Consumption~Lag_48+Lag_168,data = train.dat)
+summary(train.fit)
+#Both features are significant
+predictions<-predict.lm(object = train.fit,newdata = test.dat)
+
+Predictions.all$lm<-predictions
+
+mape_res_partb<-mape_fnc(actual = test.dat$Consumption,prediction = predictions)
+paste0("MAPE  is ",round(mape_res_partb,2)," %")
+plot(test.dat$Consumption,predictions)
+abline(a=0,b=1,col=2)
+```
+
+4.23% is not better than 7 days lag prediction but better than 2 days lag prediction.
+So we can conclude that linear regression cannot beat our naive forecast.
+We need a sophisticated model.
+
+```{r}
+
+plot(train.fit$residuals)
+car::qqPlot(train.fit$residuals,distribution="norm")
+
+```
+Residuals show some pattern so we cannot satisfy independency entirely.
+As can be seen from qqplot it didn't satisfy normality assumption of linear regression.
+
+PART C
+```{r}
+#Training models for each hour
+full.test.dat<-c()
+for(tmp.hour in 0:23){
+  
+  train.tmp<-train.dat %>% filter(Hour==tmp.hour)
+  test.tmp<-test.dat %>% filter(Hour==tmp.hour)
+  
+  fit.tmp<-lm(formula = Consumption~Lag_48+Lag_168,data = train.tmp)
+  paste0("fit for Hour: ",tmp.hour)
+  summary(fit.tmp)
+  predictions.tmp<-predict.lm(object = fit.tmp,newdata = test.tmp)
+  test.tmp$Predictions<-predictions.tmp
+  full.test.dat<-rbind(full.test.dat,test.tmp)
+  
+  mape_res<-mape_fnc(actual = test.tmp$Consumption,prediction = test.tmp$Predictions)
+  print(paste0("MAPE for Hour ",tmp.hour," is ",round(mape_res,2)," %"))
+}
+Predictions.all<-Predictions.all %>% left_join(full.test.dat %>% 
+                                                 select(Date,Hour,Predictions) %>% 
+                                                 rename(lm_24=Predictions),by=c("Date","Hour"))
+mape_res_partc<-mape_fnc(actual = full.test.dat$Consumption,prediction = full.test.dat$Predictions)
+print(paste0("Total MAPE is ",round(mape_res_partc,2)," %"))
+```
+
+Overall, more sophisticated regression model does not help to improve our forecast (4.36 > 4.23(part b))
+We have better forecast in the evenings compared to daytime. We will discuss this in part f.
+
+PART D
+```{r}
+library(glmnet,quietly = T)
+find_value<-function(x){
+  as.numeric(na.omit(unique(x)))
+}
+#Make data wider 
+dat.wider<-dat.longer %>% rename(Lag_day2=Lag_48,Lag_day7=Lag_168) %>%
+  mutate(Hour_ind=Hour) %>% 
+  pivot_wider(names_from = Hour_ind,values_from=c(Lag_day2,Lag_day7),names_sep="_hour_",
+              values_fn=list(Lag_day2_hour_0=find_value)) %>% 
+  group_by(Date) %>% 
+  mutate_at(.vars = 4:ncol(.),.funs = find_value) %>% 
+  ungroup()
+
+dat.wider %>% head
+
+train.data<-dat.wider %>% filter(Date<"2020-11-01")
+test.data<-dat.wider %>% filter(Date>="2020-11-01")
+
+#Below, for each hour and parameter we create folds and record the mape values
+#Since algorithm is slow, we decided to use parallel computing
+full.test.dat<-c()
+chosen.lambdas.min<-c()
+chosen.lambdas.1se<-c()
+fit.list<-list()
+for(tmp.hour in 0:23){
+  
+  train.tmp<-train.data %>% filter(Hour==tmp.hour)
+  test.tmp<-test.data %>% filter(Hour==tmp.hour)
+  
+  cl=makeCluster(8)
+  registerDoSNOW(cl)
+  set.seed(123)
+  cv.fit<-cv.glmnet(x = as.matrix(train.tmp[,4:ncol(train.tmp)]),
+                    y = train.tmp$Consumption,nfolds = 10,
+                    nlambda=100,
+                    type.measure="mae",
+                    parallel = T,keep=T)
+  stopCluster(cl)
+  fit.list[[tmp.hour+1]]<-cv.fit
+  chosen.lambdas.min<-c(chosen.lambdas.min,cv.fit$lambda.min)
+  chosen.lambdas.1se<-c(chosen.lambdas.1se,cv.fit$lambda.1se)
+
+  predictions.min<-predict(object = cv.fit, newx = as.matrix(test.tmp[,4:ncol(test.tmp)]),
+                           s="lambda.min",type="response")
+  
+  predictions.1se<-predict(object = cv.fit, newx = as.matrix(test.tmp[,4:ncol(test.tmp)]),
+                           s="lambda.1se",type="response")
+  test.tmp$Predictions.min<-as.numeric(predictions.min)
+  test.tmp$Predictions.1se<-as.numeric(predictions.1se)
+
+  full.test.dat<-rbind(full.test.dat,test.tmp)
+  
+  mape_res_min<-mape_fnc(actual = test.tmp$Consumption,prediction = test.tmp$Predictions.min)
+  print(paste0("MAPE with min lambda for Hour ",tmp.hour," is ",round(mape_res_min,2)," %"))
+  mape_res_1se<-mape_fnc(actual = test.tmp$Consumption,prediction = test.tmp$Predictions.1se)
+  print(paste0("MAPE with 1se lambda for Hour ",tmp.hour," is ",round(mape_res_1se,2)," %"))
+}
+Predictions.all<-Predictions.all %>% left_join(full.test.dat %>% 
+                                                 select(Date,Hour,Predictions.min,Predictions.1se) %>% 
+                                                 rename(glmnet.min=Predictions.min,glmnet.1se=Predictions.1se),by=c("Date","Hour"))
+# Results for each hour shows that mape is higher during daytime
+mape_res_partd_min<-mape_fnc(actual = full.test.dat$Consumption,prediction = full.test.dat$Predictions.min)
+print(paste0("Total MAPE for min lambda is ",round(mape_res_partd_min,2)," %"))
+mape_res_partd_1se<-mape_fnc(actual = full.test.dat$Consumption,prediction = full.test.dat$Predictions.1se)
+print(paste0("Total MAPE for 1se lambda is ",round(mape_res_partd_1se,2)," %"))
+```
+With lasso regression MAPE has decreased meaning that our forecast has improved.
+We beat our naive forecast. 
+Moreover, min lambda gives better MAPE result than 1 se lambda overall.
+Only for Hours between 18 to 23, 1se lambda gives better result.
+
+The ones with zero coefficients are the ones which increase the potential error of the model.
+So those parameters should be keep at zero level in order to ensure fitness of the model.
+```{r}
+#Example fit for 15th Hour
+tmp.hour<-15
+fit.list[[tmp.hour+1]]$lambda.min
+coef(fit.list[[tmp.hour+1]],s="lambda.min")
+fit.list[[tmp.hour+1]]$lambda.1se
+coef(fit.list[[tmp.hour+1]],s="lambda.1se")
+plot(fit.list[[tmp.hour+1]])
+```
+As we can see from the figures, whereas lambda increases our residuals also increases.
+lambda.min has 12 zero coefficients and 37 nonzero coefficients
+lambda.1se has 31 zero coefficients and 17 nonzero coefficients
+
+```{r}
+#Example fit for 10th Hour
+tmp.hour<-10
+fit.list[[tmp.hour+1]]$lambda.min
+coef(fit.list[[tmp.hour+1]],s="lambda.min")
+fit.list[[tmp.hour+1]]$lambda.1se
+coef(fit.list[[tmp.hour+1]],s="lambda.1se")
+plot(fit.list[[tmp.hour+1]])
+```
+lambda.min has 26 zero coefficients and 22 nonzero coefficients
+lambda.1se has 27 zero coefficients and 21 nonzero coefficients
+```{r}
+#Example fit for 10th Hour
+tmp.hour<-5
+fit.list[[tmp.hour+1]]$lambda.min
+coef(fit.list[[tmp.hour+1]],s="lambda.min")
+fit.list[[tmp.hour+1]]$lambda.1se
+coef(fit.list[[tmp.hour+1]],s="lambda.1se")
+plot(fit.list[[tmp.hour+1]])
+```
+lambda.min has 28 zero coefficients and 20 nonzero coefficients
+lambda.1se has 31 zero coefficients and 17 nonzero coefficients
+
+For instance:
+[1] "MAPE with min lambda for Hour 5 is 1.38 %" (28 zero coefficients)
+[1] "MAPE with 1se lambda for Hour 5 is 1.44 %" (31 zero coefficients)
+
+[1] "MAPE with min lambda for Hour 10 is 4.27 %" (26 zero coefficients)
+[1] "MAPE with 1se lambda for Hour 10 is 4.34 %" (27 zero coefficients)
+
+[1] "MAPE with min lambda for Hour 15 is 3.77 %" (12 zero coefficients)
+[1] "MAPE with 1se lambda for Hour 15 is 3.99 %" (31 zero coefficients)
+
+We could not detect any relationship between these hours.
+
+As we can see we have a huge variable selection because our constraint space with respect to lasso 
+is not smooth contrary to ridge regression case. In lasso regression, max likelihood calculation is
+not included because we do not set any distribution. We just try make an convex optimization
+in order to ensure the fitness of the model. So, it is not possible to examine the coefficients
+within some distribution. 
+
+```{r}
+#Here is the chosen lambdas:
+plot(x=0:23,y=chosen.lambdas.min,type="l",xlab="Hour",ylab="Lambda")
+plot(x=0:23,y=chosen.lambdas.1se,type="l",xlab="Hour",ylab="Lambda")
+
+```
+
+It can be seen that glmnet chooses higher lambdas in the afternoons compared to other hours.
+     
+PART E
+```{r}
+# For part e we will use "penalized" package. In the introduction part of the vignette, 
+# it is said that lasso regression with fused penalties as Tibshirani explained can be used.
+library(penalized,quietly = T)
+param.set<-expand.grid(Lambda1=c(100,20,5,2,0.5),
+                       Lambda2=c(100,20,5,2,0.5))
+
+full.test.dat<-c()
+chosen.lambdas<-c()
+fit.list<-list()
+all.param.result<-c()
+for(tmp.hour in 0:23){
+  
+  train.tmp<-train.data %>% filter(Hour==tmp.hour)
+  test.tmp<-test.data %>% filter(Hour==tmp.hour)
+  
+  param.result<-c()
+  for(param in 1:nrow(param.set)){
+    lambda1.val<-param.set[param,1]
+    lambda2.val<-param.set[param,2]
+    
+    set.seed(123)
+    fold.list<-caret::createFolds(train.tmp$Consumption,k = 10)
+    
+    cl=makeCluster(8)
+    registerDoSNOW(cl)
+    progress <- function(n) cat(sprintf("task %d is complete\n", n))
+    opts <- list(progress=progress)
+    
+    mape.res<-foreach(tmp.fold=fold.list,
+                      .combine=c,
+                      #.options.snow=opts,
+                      .packages = c("penalized")) %dopar%{
+                        train.tmp.fold<-train.tmp[-tmp.fold,]
+                        test.tmp.fold<-train.tmp[tmp.fold,]
+                        
+                        fit.tmp.fold<-penalized(response = train.tmp.fold$Consumption,
+                                                penalized = train.tmp.fold[,4:ncol(train.tmp.fold)],
+                                                lambda1 = lambda1.val,lambda2 = lambda2.val,
+                                                maxiter=25,#default
+                                                fusedl = TRUE)
+                        
+                        predictions.fold<-predict(object = fit.tmp.fold,penalized = test.tmp.fold[,4:ncol(test.tmp.fold)])[,"mu"]
+                        mape_fnc(actual = test.tmp.fold$Consumption,prediction = predictions.fold)
+                      }
+    stopCluster(cl)
+    
+    param.result<-bind_rows(param.result,tibble(hour=tmp.hour,lambda1=lambda1.val,lambda2=lambda2.val,fold_no=1:10,mape=mape.res))
+    #print(paste0("paramset: ",param))
+  }
+  all.param.result<-bind_rows(all.param.result,param.result)
+  param.final<-param.result %>% group_by(lambda1,lambda2) %>% 
+    summarise(avg_mape=mean(mape),.groups="keep") %>% 
+    ungroup()
+  
+  selected<-param.final %>% 
+    filter(avg_mape==min(avg_mape)) %>% 
+    select(lambda1,lambda2)
+  chosen.lambdas<-bind_rows(chosen.lambdas,selected)
+  
+  fit.tmp<-penalized(response = train.tmp$Consumption,
+                     penalized = train.tmp[,4:ncol(train.tmp)],
+                     lambda1 = selected$lambda1,lambda2 = selected$lambda2,
+                     maxiter=25,
+                     fusedl = TRUE,trace = FALSE)
+  fit.list[[tmp.hour+1]]<-fit.tmp
+  predictions.tmp<-predict(object = fit.tmp,penalized = test.tmp[,4:ncol(test.tmp)])[,"mu"]
+  test.tmp$Predictions<-predictions.tmp
+  full.test.dat<-rbind(full.test.dat,test.tmp)
+  
+  mape_res<-mape_fnc(actual = test.tmp$Consumption,prediction = test.tmp$Predictions)
+  print(paste0("MAPE for Hour ",tmp.hour," is ",round(mape_res,2)," %"))
+}
+Predictions.all<-Predictions.all %>% left_join(full.test.dat %>% 
+                                                 select(Date,Hour,Predictions) %>% 
+                                                 rename(fusedlasso=Predictions),by=c("Date","Hour"))
+mape_res<-mape_fnc(actual = full.test.dat$Consumption,prediction = full.test.dat$Predictions)
+print(paste0("Total MAPE is ",round(mape_res,2)," %"))
+
+chosen.lambdas
+# Looks like same for all hours
+unique(param.final$avg_mape)
+# Different lambda values do not lead to different mape value. 
+# The reason for this may be overfit or underfit because of maxiter number.
+# Increasing this number leads to increase running time so much.
+# That's why we couldn't make too many experiment.
+```
+
+```{r}
+# Fit example for 5th Hour
+tmp.hour<-5
+coefficients(fit.list[[tmp.hour+1]],"all")
+```
+
+
+
+PART F
+```{r}
+# The reason why daytime our models have higher MAPE is because 
+# variance and mean of electricity consumption is higher in those time of day.
+# Therefore it is hard to make good prediction for those hours.
+
+rawdat %>% group_by(Hour) %>% summarise(avg=mean(Consumption),.groups="keep") %>% 
+  ggplot(aes(Hour,avg))+
+  geom_bar(stat = "identity")
+
+rawdat %>% group_by(Hour) %>% summarise(sdev=sd(Consumption),.groups="keep") %>% 
+  ggplot(aes(Hour,sdev))+
+  geom_bar(stat = "identity")
+
+```
+
+
+```{r}
+perf_data<-Predictions.all
+perf_data<-perf_data %>% 
+   pivot_longer(!c(Date,Hour,Consumption),names_to="Key",values_to="Prediction") %>% 
+   mutate(residual=Consumption-Prediction)
+
+perf_data %>% 
+  ggplot(aes(x=Key,y=residual))+
+  geom_boxplot()
+
+perf_data %>% group_by(Key) %>% 
+  summarise(mse=mean(residual^2),bias=mean(residual),mape=mean(abs(residual/Consumption)),.groups="keep")
+```
+fusedlasso is from part e.
+glmnet.1se and glmnet.min are from part d.
+lag_148 and lag_48 are from part a.
+lm is from part b and lm_24 is from part c.
+
+Lasso regression has minimum performance metrics.
+And the second best is the fused lasso regression.
+Our naive forecast beats linear regression models.
+Even though Lag_48's median residuals are close to zero, it has the worst performance
+because of high variance.
+
+glmnet models have similar properties with respect to the similar
+median and interquartile range. Also, lm and lm_24 models have similar properties
+with respect to median and interquartile range. We already find from previous tasks that
+mape values in linear regression higher than lasso regression. And boxplot shows
+this situation again due to wider interquartile range. 
+
+In addition, our primary predictions from part a has much more difference than others.
+Also, they pose difference in each other due to wider interquartile range and not equal median.
+
+
+
+
+
+
