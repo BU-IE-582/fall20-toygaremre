@@ -1,0 +1,1152 @@
+---
+title: "Homework 4"
+author: "Toygar Emre"
+date: "29 01 2021"
+output: html_document
+---
+
+A) FIRST PROBLEM: REGRESSION
+
+Data is taken from here: https://archive.ics.uci.edu/ml/datasets/communities+and+crime
+
+  Source:
+
+  Creator: Michael Redmond (redmond 'at' lasalle.edu); Computer Science; La Salle
+University; Philadelphia, PA, 19141, USA
+-- culled from 1990 US Census, 1995 US FBI Uniform Crime Report, 1990 US Law
+Enforcement Management and Administrative Statistics Survey, available from ICPSR at U
+of Michigan.
+-- Donor: Michael Redmond (redmond 'at' lasalle.edu); Computer Science; La Salle
+University; Philadelphia, PA, 19141, USA
+-- Date: July 2009
+
+
+  Data Set Information:
+
+  Many variables are included so that algorithms that select or learn weights for
+attributes could be tested. However, clearly unrelated attributes were not included;
+attributes were picked if there was any plausible connection to crime (N=122), plus
+the attribute to be predicted (Per Capita Violent Crimes). The variables included in
+the dataset involve the community, such as the percent of the population considered
+urban, and the median family income, and involving law enforcement, such as per capita
+number of police officers, and percent of officers assigned to drug units.
+
+The per capita violent crimes variable was calculated using population and the sum of
+crime variables considered violent crimes in the United States: murder, rape, robbery,
+and assault. There was apparently some controversy in some states concerning the
+counting of rapes. These resulted in missing values for rape, which resulted in
+incorrect values for per capita violent crime. These cities are not included in the
+dataset. Many of these omitted communities were from the midwestern USA.
+
+Data is described below based on original values. All numeric data was normalized into
+the decimal range 0.00-1.00 using an Unsupervised, equal-interval binning method.
+Attributes retain their distribution and skew (hence for example the population
+                                               attribute has a mean value of 0.06 because most communities are small). E.g. An
+attribute described as 'mean people per household' is actually the normalized (0-1)
+version of that value.
+
+The normalization preserves rough ratios of values WITHIN an attribute (e.g. double
+                                                                        the value for double the population within the available precision - except for
+                                                                        extreme values (all values more than 3 SD above the mean are normalized to 1.00; all
+                                                                                        values more than 3 SD below the mean are nromalized to 0.00)).
+
+However, the normalization does not preserve relationships between values BETWEEN
+attributes (e.g. it would not be meaningful to compare the value for whitePerCap with
+            the value for blackPerCap for a community)
+
+A limitation was that the LEMAS survey was of the police departments with at least 100
+officers, plus a random sample of smaller departments. For our purposes, communities
+not found in both census and crime datasets were omitted. Many communities are missing
+LEMAS data.
+
+We will not make any transformation or manipulation known as feature engineering other than necessary ones such as deleting non predictive columns or filling NA values.
+```{r}
+library(caret)
+library(tidyverse)
+library(doSNOW)
+library(mlr)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(gbm)
+```
+Data consists of 1994 instances and 123 features
+and there are missing values as can be seen
+
+Summary of data
+```{r}
+communities_raw=tibble(read.table("communities.data",sep=","))
+dim(communities_raw)
+summary(communities_raw)
+str(communities_raw)
+```
+
+
+```{r}
+comm<-communities_raw %>% 
+  select(-c(1:5)) %>% # These are non predictives so we remove them
+  rename(Y=V128) # Our goal to predict which is violent crimes per population
+
+# Filling NA values with median of each column
+preproc<-preProcess(comm,method = "medianImpute")
+comm<-predict(preproc,comm)
+# 30% of data is selected for test
+set.seed(123)
+TrainIndex <- sample(1:nrow(comm),size = trunc(nrow(comm)*0.7),replace = F)
+
+train_comm<- comm[TrainIndex,] %>% as.data.frame()
+test_comm <- comm[-TrainIndex,] %>% as.data.frame()
+
+Traindat<-train_comm %>% select(-Y) 
+TrainResponse<-train_comm$Y
+
+
+control.param<-trainControl(method = "cv",
+                            number = 10,
+                            allowParallel = F,
+                            returnResamp = "all",
+                            savePredictions = "all")
+
+```
+
+RMSE will be used as performance metric for this question. It is commonly used in regression problems
+
+1) Glmnet Method
+
+```{r}
+# Meaningful lambda values are selected for cross validation
+Grid.Matrix= expand.grid(alpha=1,
+                         lambda=c(0.0001,0.001,0.005,0.01,0.05,0.1))
+
+set.seed(123)
+fit.glmnet <- caret::train(x = Traindat ,
+                           y = TrainResponse,
+                           method = "glmnet",
+                           trControl = control.param,
+                           tuneGrid = Grid.Matrix,
+                           metric="RMSE")
+print(fit.glmnet)
+plot(fit.glmnet$finalModel)
+
+
+```
+
+```{r}
+glmnet.preds=predict(fit.glmnet,test_comm)
+plot(test_comm$Y,glmnet.preds)
+abline(a=0,b=1,col=2)
+glmnet.perf<-RMSE(pred = glmnet.preds,obs = test_comm$Y)
+print(glmnet.perf)
+```
+
+2) Rpart Method
+
+```{r}
+# Since in caret package we do not have minsplit parameter to tune for we will use mlr package for rpart method for all questions.
+regr.task = makeRegrTask(id = "comm", data = train_comm, target = "Y")
+resamp = makeResampleDesc("CV", iters = 10)
+lrn = makeLearner("regr.rpart")
+control.grid = makeTuneControlGrid() 
+ps = makeParamSet(
+  makeDiscreteParam("cp", values = c(0.001,0.005,0.01,0.02,0.05,0.1)),
+  makeDiscreteParam("minsplit", values = seq(1,11,length.out = 6))
+)
+
+set.seed(123)
+fit.rpart = tuneParams(lrn, task = regr.task, resampling = resamp, control = control.grid, par.set = ps, measures = list(rmse,timetrain))
+opt.grid = as.data.frame(fit.rpart$opt.path)
+print(opt.grid)
+```
+
+# Result: cp=0.01; minsplit=11 
+
+
+```{r}
+opt.grid %>% group_by(cp) %>% 
+  summarise(mean(rmse.test.rmse),.groups="keep") %>% 
+  print()
+opt.grid %>% group_by(minsplit) %>% 
+  summarise(mean(rmse.test.rmse),.groups="keep") %>% 
+  print()
+```
+While increasing minsplit is good for decreasing test rmse, complexity parameter get good results around 0.01.
+
+```{r}
+fit.opt.rpart<-rpart(Y~.,data=train_comm,method="anova",control = rpart.control(minsplit = fit.rpart$x$minsplit,cp = fit.rpart$x$cp))
+summary(fit.opt.rpart)
+rpart.plot(fit.opt.rpart)
+```
+
+
+```{r}
+#These are the important variables chosen by model
+fit.opt.rpart$variable.importance
+barplot(fit.opt.rpart$variable.importance)
+
+rpart.preds=predict(fit.opt.rpart,test_comm)
+plot(test_comm$Y,as.numeric(rpart.preds))
+
+rpart.perf<-RMSE(pred = rpart.preds,obs = test_comm$Y)
+print(rpart.perf)
+
+```
+
+3) Random Forest
+
+```{r}
+sqrt(ncol(Traindat)) #We choose values around this value for random forest
+
+Grid.Matrix= expand.grid(mtry=c(5,7,9,11,13,15))
+control.param$allowParallel<-T
+cl <- makeCluster(8)
+registerDoSNOW(cl)
+
+fit.rf <- caret::train(x = Traindat ,
+                       y = TrainResponse,
+                       method = "rf",
+                       trControl = control.param,
+                       tuneGrid = Grid.Matrix,
+                       metric="RMSE",
+                       ntree=500,
+                       nodesize=5)
+stopCluster(cl)
+
+print(fit.rf)
+plot(fit.rf$finalModel)
+
+```
+RMSE do not change so much for different m values
+
+```{r}
+varImpPlot(fit.rf$finalModel)
+imp<-data.frame(fit.rf$finalModel$importance,var = rownames(fit.rf$finalModel$importance))
+imp %>% arrange(desc(IncNodePurity)) %>% 
+  mutate(csum_purity=cumsum(IncNodePurity)) %>% 
+  print()
+
+
+```
+12 variables cover 50% of gain 
+
+```{r}
+rf.preds=predict(fit.rf,test_comm)
+plot(test_comm$Y,as.numeric(rf.preds))
+abline(a=0,b=1,col=2)
+
+rf.perf<-RMSE(pred = rf.preds,obs = test_comm$Y)
+print(rf.perf)
+```
+
+
+4) Stochastic Gradient Boosting
+
+```{r}
+Grid.Matrix= expand.grid(n.trees=seq(20,200,length.out = 6),
+                         interaction.depth=c(3,5,7,9,12),
+                         shrinkage=c(0.005,0.01,0.03,0.05,0.1),
+                         n.minobsinnode=c(10))
+cl <- makeCluster(8)
+registerDoSNOW(cl)
+fit.gbm <- caret::train(x = Traindat ,
+                        y = TrainResponse,
+                        method = "gbm",
+                        trControl = control.param,
+                        tuneGrid = Grid.Matrix,
+                        metric="RMSE")
+stopCluster(cl)
+print(fit.gbm)
+varImp(fit.gbm)
+plot(fit.gbm$finalModel)
+
+```
+
+While low number of trees may lead underfitting, high number of trees may lead overfit.
+We do not want to choose high shrinkage value because with high shrinkage 
+low number of trees should be selected otherwise it will lead to overfit.
+Increasing depth also leads to overfit. Because of these reasons, we choose reasonable values
+with the hope of that they will not cause underfit or overfit.
+From the results it can be seen. With low shrinkage such as 0.005 we need higher interaction depth and higher ntrees.
+With high shrinkage such as 0.1 we need lower depth and trees otherwise rmse value is increasing.
+
+```{r}
+gbm.preds=predict(fit.gbm,test_comm)
+gbm.perf<-RMSE(pred = gbm.preds,obs = test_comm$Y)
+print(gbm.perf)
+
+plot(test_comm$Y,type="l",ylab="y")
+lines(gbm.preds,col=2)
+legend("top", legend=c("observation", "predicted"), col=1:2, lty=1, ncol=2, bty="n")
+
+plot(test_comm$Y,gbm.preds)
+abline(a=0,b=1,col=2)
+```
+
+
+
+```{r}
+comm_perfs<-cbind(c(glmnet.perf,rpart.perf,rf.perf,gbm.perf),
+                  c(min(fit.glmnet$results$RMSE),fit.rpart$y["rmse.test.rmse"],min(fit.rf$results$RMSE),min(fit.gbm$results$RMSE)))
+
+
+colnames(comm_perfs)<-c("Test","CV")
+rownames(comm_perfs)<-c("glmnet","rpart","rf","gbm")
+comm_perfs
+```
+
+
+gbm perform the best even though cv result of rf is better. We can see that with only 1 tree we do not get great result(0.155). 
+Glmnet performs better than rpart. However, creating ensembles with one tree we get great results.
+Test result is better than cv results which may be an indication of that we did not make overfitting.
+
+A) SECOND PROBLEM: BALANCED CLASSIFICATION
+
+The data is taken from here: http://archive.ics.uci.edu/ml/datasets/Spambase/
+Source:
+Creators:
+Mark Hopkins, Erik Reeber, George Forman, Jaap Suermondt
+Hewlett-Packard Labs, 1501 Page Mill Rd., Palo Alto, CA 94304
+
+Donor:
+  George Forman (gforman at nospam hpl.hp.com) 650-857-7835
+
+Data Set Information:
+  The "spam" concept is diverse: advertisements for products/web sites, make money fast schemes, chain letters, pornography...
+
+Our collection of spam e-mails came from our postmaster and individuals who had filed spam.
+Our collection of non-spam e-mails came from filed work and personal e-mails, and hence the word 'george' and the area code '650' are indicators of non-spam.
+These are useful when constructing a personalized spam filter.
+One would either have to blind such non-spam indicators or get a very wide collection of non-spam to generate a general purpose spam filter.
+For background on spam:
+
+Cranor, Lorrie F., LaMacchia, Brian A. Spam!
+Communications of the ACM, 41(8):74-83, 1998.
+
+(a) Hewlett-Packard Internal-only Technical Report. External forthcoming.
+(b) Determine whether a given email is spam or not.
+(c) ~7% misclassification error. False positives (marking good mail as spam) are very undesirable.If we insist on zero false positives in the training/testing set, 20-25% of the spam passed through the filter.
+
+
+```{r}
+spam_raw<-tibble(read.table("spambase.data",sep = ","))
+dim(spam_raw)
+any(is.na(spam_raw))# no missing values
+summary(spam_raw)
+str(spam_raw)
+```
+
+Performance metric is accuracy we do not want false positives meaning that we do not want to mark good e-mails as spam and
+we also do not want to pass spam e-mails.
+Therefore, We need to classify correctly.
+
+```{r}
+spam<-spam_raw %>% 
+  rename(Y=V58) %>% 
+  mutate(Y=ifelse(Y==1,"spam",
+                  ifelse(Y==0,"non_spam",NA)))
+table(spam$Y)
+
+
+
+# 30% of data is selected for test
+set.seed(123)
+TrainIndex <- sample(1:nrow(spam),size = trunc(nrow(spam)*0.7),replace = F)
+
+train_spam<- spam[TrainIndex,] %>% as.data.frame()
+test_spam <- spam[-TrainIndex,] %>% as.data.frame()
+
+Traindat<-train_spam %>% select(-Y) 
+TrainResponse<-train_spam$Y
+
+control.param<-trainControl(method = "cv",
+                            number = 10,
+                            allowParallel = F,
+                            returnResamp = "all",
+                            savePredictions = "all",
+                            classProbs = T)
+
+```
+
+1) Glmnet Method
+
+```{r}
+Grid.Matrix= expand.grid(alpha=1,
+                         lambda=c(0.0001,0.001,0.005,0.01,0.05,0.1))
+
+
+set.seed(123)
+fit.glmnet <- caret::train(x = Traindat ,
+                           y = TrainResponse,
+                           method = "glmnet",
+                           trControl = control.param,
+                           tuneGrid = Grid.Matrix,
+                           metric="Accuracy")
+print(fit.glmnet)
+plot(fit.glmnet$finalModel)
+
+
+```
+
+
+```{r}
+glmnet.preds.prob=predict(fit.glmnet,test_spam,type="prob")[,"spam"]
+#If we do not want false positives we can increase threshold
+#If we do not want false negatives we can decrease threshold
+for(thr in seq(0.2,0.8,by=0.2)){
+  glmnet.preds<-ifelse(glmnet.preds.prob>thr,"spam","non_spam")
+  conf.mat<-confusionMatrix(table(glmnet.preds,test_spam$Y))
+  print(thr)
+  print(conf.mat)
+}
+
+# We choose 0.5 as threshold to compare it with cv result
+glmnet.preds<-ifelse(glmnet.preds.prob>0.5,"spam","non_spam")
+conf.mat<-confusionMatrix(table(glmnet.preds,test_spam$Y))
+print(conf.mat)
+
+glmnet.perf<-conf.mat$overall["Accuracy"]
+print(glmnet.perf)
+```
+For start 92% accuracy is good. In the paper it is stated that there is 7% misclassification error.
+
+2) Rpart Method
+
+```{r}
+class.task = makeClassifTask(id = "spam", data = train_spam, target = "Y")
+resamp = makeResampleDesc("CV", iters = 10)
+lrn = makeLearner("classif.rpart")
+control.grid = makeTuneControlGrid() 
+ps = makeParamSet(
+  makeDiscreteParam("cp", values = c(0.001,0.005,0.01,0.02,0.05,0.1)),
+  makeDiscreteParam("minsplit", values = seq(1,11,length.out = 6))
+)
+
+set.seed(123)
+fit.rpart = tuneParams(lrn, task = class.task, resampling = resamp, control = control.grid, par.set = ps, measures = list(acc,timetrain))
+opt.grid = as.data.frame(fit.rpart$opt.path)
+print(opt.grid)
+opt.grid %>% group_by(cp) %>% 
+  summarise(mean(acc.test.mean),.groups="keep") %>% 
+  print()
+opt.grid %>% group_by(minsplit) %>% 
+  summarise(mean(acc.test.mean),.groups="keep") %>% 
+  print()
+
+```
+Looks like minsplit does not affect so much.
+
+```{r}
+fit.opt.rpart<-rpart(Y~.,data=train_spam,method="class",control = rpart.control(minsplit = fit.rpart$x$minsplit,cp = fit.rpart$x$cp))
+#summary(fit.opt.rpart) #Too long
+rpart.plot(fit.opt.rpart)
+
+#These are the important variables chosen by model
+print(fit.opt.rpart$variable.importance)
+#first 3 variables  (V53,V7,V23) covers 50%
+print(cumsum(fit.opt.rpart$variable.importance))
+barplot(fit.opt.rpart$variable.importance)
+
+rpart.preds.prob=predict(fit.opt.rpart,test_spam,type = "prob")[,"spam"]
+#If we do not want false positives we can increase threshold
+#If we do not want false negatives we can decrease threshold
+for(thr in seq(0.2,0.8,by=0.2)){
+  rpart.preds<-ifelse(rpart.preds.prob>thr,"spam","non_spam")
+  conf.mat<-confusionMatrix(table(rpart.preds,test_spam$Y))
+  print(thr)
+  print(conf.mat)
+}
+
+rpart.preds<-ifelse(rpart.preds.prob>0.5,"spam","non_spam")
+conf.mat<-confusionMatrix(table(rpart.preds,test_spam$Y))
+print(conf.mat)
+
+rpart.perf<-conf.mat$overall["Accuracy"]
+print(rpart.perf)
+```
+Accuracy has improved with rpart.
+
+3) Random Forest
+
+```{r}
+sqrt(ncol(Traindat))
+#We choose values around this value
+Grid.Matrix= expand.grid(mtry=c(4,5,6,7,8,10))
+control.param$allowParallel<-T
+cl <- makeCluster(8)
+registerDoSNOW(cl)
+set.seed(123)
+fit.rf <- caret::train(x = Traindat ,
+                       y = TrainResponse,
+                       method = "rf",
+                       trControl = control.param,
+                       tuneGrid = Grid.Matrix,
+                       metric="Accuracy",
+                       ntree=500,
+                       nodesize=5)
+stopCluster(cl)
+
+print(fit.rf)
+plot(fit.rf$finalModel)
+```
+It looks like we are not overfitting 
+
+```{r}
+varImpPlot(fit.rf$finalModel)
+imp<-data.frame(fit.rf$finalModel$importance,var = rownames(fit.rf$finalModel$importance))
+imp %>% arrange(desc(MeanDecreaseGini)) %>% 
+  mutate(csum_gini=cumsum(MeanDecreaseGini)) %>% 
+  print()
+#First 10 variables V52 to V24 covers more than 50% of total gini decrease
+```
+
+```{r}
+rf.preds.prob<-predict(fit.rf,test_spam,type = "prob")[,"spam"]
+#If we do not want false positives we can increase threshold
+#If we do not want false negatives we can decrease threshold
+for(thr in seq(0.2,0.8,by=0.2)){
+  rf.preds<-ifelse(rf.preds.prob>thr,"spam","non_spam")
+  conf.mat<-confusionMatrix(table(rf.preds,test_spam$Y))
+  print(thr)
+  print(conf.mat)
+}
+
+rf.preds<-ifelse(rf.preds.prob>0.5,"spam","non_spam")
+conf.mat<-confusionMatrix(table(rf.preds,test_spam$Y))
+print(conf.mat)
+# We correctly classified 95% of e-mails
+# We passed 42 spam e-mails and filtered 25 non spam e-mails
+
+rf.perf<-conf.mat$overall["Accuracy"]
+print(rf.perf)
+
+```
+
+Accuracy has improved to 95% which is great.
+
+4) Stochastic Gradient Boosting
+
+For this question we increase n.trees because with n.trees of 200 best selected parameters are n.trees=200, depth=12, shrinkage=0.1.
+So, I solve the issue by increasing n.trees
+
+```{r}
+Grid.Matrix= expand.grid(n.trees=seq(20,400,length.out = 6),
+                         interaction.depth=c(3,5,7,9,12),
+                         shrinkage=c(0.005,0.01,0.03,0.05,0.1),
+                         n.minobsinnode=c(10))
+cl <- makeCluster(8)
+registerDoSNOW(cl)
+set.seed(123)
+fit.gbm <- caret::train(x = Traindat ,
+                        y = TrainResponse,
+                        method = "gbm",
+                        trControl = control.param,
+                        tuneGrid = Grid.Matrix,
+                        metric="Accuracy")
+stopCluster(cl)
+print(fit.gbm)
+plot(fit.gbm)
+varImp(fit.gbm)
+#V52,V7, V53 are the most important features according to gbm model
+```
+
+```{r}
+gbm.preds.rpbo=predict(fit.gbm,test_spam,type = "prob")[,"spam"]
+for(thr in seq(0.2,0.8,by=0.2)){
+  gbm.preds<-ifelse(gbm.preds.rpbo>thr,"spam","non_spam")
+  conf.mat<-confusionMatrix(table(gbm.preds,test_spam$Y))
+  print(thr)
+  print(conf.mat)
+}
+
+gbm.preds<-ifelse(gbm.preds.rpbo>0.5,"spam","non_spam")
+conf.mat<-confusionMatrix(table(gbm.preds,test_spam$Y))
+print(conf.mat)
+# We correctly classified 95% of e-mails
+# We passed 32 spam e-mails and filtered 31 non spam e-mails
+
+gbm.perf<-conf.mat$overall["Accuracy"]
+print(gbm.perf)
+
+
+
+```
+
+
+```{r}
+spam_perfs<-cbind(c(glmnet.perf,rpart.perf,rf.perf,gbm.perf),
+                  c(max(fit.glmnet$results$Accuracy),fit.rpart$y["acc.test.mean"],max(fit.rf$results$Accuracy),max(fit.gbm$results$Accuracy)))
+
+
+colnames(spam_perfs)<-c("Test","CV")
+rownames(spam_perfs)<-c("glmnet","rpart","rf","gbm")
+spam_perfs
+```
+
+GBM performed best for this question however it is very close to random forest. rpart performed better than glmnet.
+So, maybe rpart is generally better than glmnet for classification. We will see if this inference is correct in next questions.
+
+
+C) THIRD PROBLEM: IMBALANCED CLASSIFICATION
+
+The data is taken from here: https://www.kaggle.com/mlg-ulb/creditcardfraud
+
+Content:
+The datasets contains transactions made by credit cards in September 2013 by european cardholders.
+This dataset presents transactions that occurred in two days, where we have 492 frauds out of 284,807 transactions.
+The dataset is highly unbalanced, the positive class (frauds) account for 0.172% of all transactions.
+
+It contains only numerical input variables which are the result of a PCA transformation. Unfortunately, due to confidentiality issues,
+we cannot provide the original features and more background information about the data. Features V1, V2, … V28 are the principal components obtained with PCA,
+the only features which have not been transformed with PCA are 'Time' and 'Amount'. Feature 'Time' contains the seconds elapsed between each transaction and the first transaction
+in the dataset. The feature 'Amount' is the transaction Amount, this feature can be used for example-dependant cost-senstive learning.
+Feature 'Class' is the response variable and it takes value 1 in case of fraud and 0 otherwise.
+
+
+Given the class imbalance ratio, we recommend measuring the accuracy using the Area Under the Precision-Recall Curve (AUPRC).
+Confusion matrix accuracy is not meaningful for unbalanced classification.
+
+Acknowledgements
+The dataset has been collected and analysed during a research collaboration of Worldline and the Machine Learning Group (http://mlg.ulb.ac.be) of ULB (Université Libre de Bruxelles)
+on big data mining and fraud detection.
+
+```{r}
+credit_raw<-tibble(read.csv("creditcard.csv",sep = ","))
+
+dim(credit_raw)
+any(is.na(credit_raw))# no missing values
+summary(credit_raw)
+str(credit_raw)
+credit<-credit_raw %>% 
+  rename(Y=Class) %>% 
+  mutate(Y=ifelse(Y==1,"fraud",
+                  ifelse(Y==0,"non_fraud",NA)))
+table(credit$Y)
+
+```
+
+We need to reduce the data since it is too large and takes so much time. So I will choose 5000 instance from class non_fraud and 100 from class fraud
+
+Performance metric is balanced accuracy since problem is unbalanced classification and traditional accuracy is not good idea for these kind of problems.
+
+```{r}
+set.seed(123)
+classnonfrauds<-credit %>% filter(Y=="non_fraud") %>% filter(row_number() %in% sample(1:nrow(.),5000,replace=F))
+classfrauds<-credit %>% filter(Y=="fraud") %>% filter(row_number() %in% sample(1:nrow(.),100,replace=F))
+credit<-bind_rows(classfrauds,classnonfrauds)
+table(credit$Y)
+
+# 30% of data is selected for test
+set.seed(123)
+TrainIndex <- sample(1:nrow(credit),size = trunc(nrow(credit)*0.7),replace = F)
+
+train_credit<- credit[TrainIndex,] %>% as.data.frame()
+test_credit<- credit[-TrainIndex,] %>% as.data.frame()
+
+Traindat<-train_credit %>% select(-Y) 
+TrainResponse<-train_credit$Y
+
+control.param<-trainControl(method = "cv",
+                            number = 10,
+                            allowParallel = F,
+                            returnResamp = "all",
+                            savePredictions = "all",
+                            classProbs = T,
+                            summaryFunction = multiClassSummary)
+```
+
+1) Glmnet Method
+
+```{r}
+Grid.Matrix= expand.grid(alpha=1,
+                         lambda=c(0.0001,0.001,0.005,0.01,0.05,0.1))
+
+
+set.seed(123)
+fit.glmnet <- caret::train(x = Traindat ,
+                           y = TrainResponse,
+                           method = "glmnet",
+                           trControl = control.param,
+                           tuneGrid = Grid.Matrix,
+                           metric="Balanced_Accuracy")
+print(fit.glmnet)
+plot(fit.glmnet$finalModel)
+```
+
+
+```{r}
+glmnet.preds.prob=predict(fit.glmnet,test_credit,type="prob")[,"fraud"]
+#We need to use lower threshold values to identify fraud
+for(thr in seq(0.1,0.5,by=0.1)){
+  glmnet.preds<-ifelse(glmnet.preds.prob>thr,"fraud","non_fraud")
+  conf.mat<-confusionMatrix(table(glmnet.preds,test_credit$Y))
+  print(thr)
+  print(conf.mat)
+}
+
+glmnet.preds<-ifelse(glmnet.preds.prob>0.5,"fraud","non_fraud")
+conf.mat<-confusionMatrix(table(glmnet.preds,test_credit$Y))
+print(conf.mat)
+
+glmnet.perf<-conf.mat$byClass["Balanced Accuracy"]
+print(glmnet.perf)
+```
+
+
+2) Rpart Method
+
+```{r}
+class.task = makeClassifTask(id = "fraud", data = train_credit, target = "Y")
+resamp = makeResampleDesc("CV", iters = 10)
+lrn = makeLearner("classif.rpart")
+control.grid = makeTuneControlGrid() 
+ps = makeParamSet(
+  makeDiscreteParam("cp", values = c(0.001,0.005,0.01,0.02,0.05,0.1)),
+  makeDiscreteParam("minsplit", values = seq(1,11,length.out = 6))
+)
+set.seed(123)
+fit.rpart = tuneParams(lrn, task = class.task, resampling = resamp, 
+                       control = control.grid, par.set = ps, 
+                       measures = list(ber,timetrain))# balanced error rate
+opt.grid = as.data.frame(fit.rpart$opt.path)
+print(opt.grid)
+opt.grid %>% group_by(cp) %>% 
+  summarise(mean(ber.test.mean),.groups="keep") %>% 
+  print()
+opt.grid %>% group_by(minsplit) %>% 
+  summarise(mean(ber.test.mean),.groups="keep") %>% 
+  print()
+
+```
+
+
+
+```{r}
+fit.opt.rpart<-rpart(Y~.,data=train_credit,method="class",control = rpart.control(minsplit = fit.rpart$x$minsplit,cp = fit.rpart$x$cp))
+summary(fit.opt.rpart)
+rpart.plot(fit.opt.rpart)
+
+#These are the important variables chosen by model
+print(fit.opt.rpart$variable.importance)
+#first 3 variables  (V17,V12,V14) covers 50%
+print(cumsum(fit.opt.rpart$variable.importance))
+barplot(fit.opt.rpart$variable.importance)
+```
+
+
+```{r}
+rpart.preds.prob=predict(fit.opt.rpart,test_credit,type = "prob")[,"fraud"]
+for(thr in seq(0.1,0.7,by=0.2)){
+  rpart.preds<-ifelse(rpart.preds.prob>thr,"fraud","non_fraud")
+  conf.mat<-confusionMatrix(table(rpart.preds,test_credit$Y))
+  print(thr)
+  print(conf.mat)
+}
+
+rpart.preds<-ifelse(rpart.preds.prob>0.5,"fraud","non_fraud")
+conf.mat<-confusionMatrix(table(rpart.preds,test_credit$Y))
+print(conf.mat)
+
+rpart.perf<-conf.mat$byClass["Balanced Accuracy"]
+print(rpart.perf)
+```
+
+3) Random Forest
+```{r}
+sqrt(ncol(Traindat)) # mtry is selected around this value
+Grid.Matrix= expand.grid(mtry=c(3,4,5,6,7,8))
+control.param$allowParallel<-T
+cl <- makeCluster(8)
+registerDoSNOW(cl)
+set.seed(123)
+fit.rf <- caret::train(x = Traindat ,
+                       y = TrainResponse,
+                       method = "rf",
+                       trControl = control.param,
+                       tuneGrid = Grid.Matrix,
+                       metric="Balanced_Accuracy",
+                       ntree=500,
+                       nodesize=5)
+stopCluster(cl)
+
+print(fit.rf)
+plot(fit.rf$finalModel)
+```
+
+It looks like we are not overfitting. While training error decreases, test error also decreases and then increases a bit.
+Using 500 trees is not improving error rate. Using lower may be enough.
+
+
+
+```{r}
+varImpPlot(fit.rf$finalModel)
+imp<-data.frame(fit.rf$finalModel$importance,var = rownames(fit.rf$finalModel$importance))
+imp %>% arrange(desc(MeanDecreaseGini)) %>% 
+  mutate(csum_gini=cumsum(MeanDecreaseGini)) %>% 
+  print()
+#First 10 variables V17,V14,V12,V11 covers more than 50% of total gini decrease
+
+```
+
+
+```{r}
+rf.preds.prob<-predict(fit.rf,test_credit,type = "prob")[,"fraud"]
+for(thr in seq(0.1,0.7,by=0.2)){
+  rf.preds<-ifelse(rf.preds.prob>thr,"fraud","non_fraud")
+  conf.mat<-confusionMatrix(table(rf.preds,test_credit$Y))
+  print(thr)
+  print(conf.mat)
+}
+
+
+rf.preds<-ifelse(rf.preds.prob>0.5,"fraud","non_fraud")
+conf.mat<-confusionMatrix(table(rf.preds,test_credit$Y))
+print(conf.mat)
+# We marked 7 frauds as non frauds and we correctly classified all non frauds.
+
+rf.perf<-conf.mat$byClass["Balanced Accuracy"]
+print(rf.perf)
+```
+By using lower threshold on probabilities we can find more frauds however, we will classify some non frauds as fraud.
+If we are not afraid of negative outcome of this choice then we can determine lower threshold.
+
+4) Stochastic Gradient Boosting
+
+```{r}
+Grid.Matrix= expand.grid(n.trees=seq(20,300,length.out = 3),
+                         interaction.depth=c(5,8,12),
+                         shrinkage=c(0.01,0.03,0.05),
+                         n.minobsinnode=c(10))
+cl <- makeCluster(8)
+registerDoSNOW(cl)
+set.seed(123)
+fit.gbm <- caret::train(x = Traindat ,
+                        y = TrainResponse,
+                        method = "gbm",
+                        trControl = control.param,
+                        tuneGrid = Grid.Matrix,
+                        metric="Balanced_Accuracy")
+stopCluster(cl)
+print(fit.gbm)
+plot(fit.gbm)
+varImp(fit.gbm)
+```
+V17, V14 and V12 are the most important features according to gbm model
+!Same with random forest model
+
+```{r}
+
+gbm.preds.prob=predict(fit.gbm,test_credit,type = "prob")[,"fraud"]
+for(thr in seq(0.1,0.7,by=0.2)){
+  gbm.preds<-ifelse(gbm.preds.prob>thr,"fraud","non_fraud")
+  conf.mat<-confusionMatrix(table(gbm.preds,test_credit$Y))
+  print(thr)
+  print(conf.mat)
+}
+
+gbm.preds<-ifelse(gbm.preds.prob>0.5,"fraud","non_fraud")
+conf.mat<-confusionMatrix(table(gbm.preds,test_credit$Y))
+print(conf.mat)
+# We marked 7 frauds as non frauds and we correctly classified all non frauds.
+
+gbm.perf<-conf.mat$byClass["Balanced Accuracy"]
+print(gbm.perf)
+
+```
+
+
+```{r}
+fraud_perfs<-cbind(c(glmnet.perf,rpart.perf,rf.perf,gbm.perf),
+                  c(max(fit.glmnet$results$Balanced_Accuracy),1-fit.rpart$y["ber.test.mean"],max(fit.rf$results$Balanced_Accuracy),max(fit.gbm$results$Balanced_Accuracy)))
+
+
+colnames(fraud_perfs)<-c("Test","CV")
+rownames(fraud_perfs)<-c("glmnet","rpart","rf","gbm")
+fraud_perfs
+```
+
+It looks like our inference is not correct one. Glmnet performed better in imbalanced classification than rpart.
+And it is also the best one. Test results are lower than cv result but not so much. Therefore, we are not suspected of overfitting.
+
+
+D) FOURTH PROBLEM: MULTICLASS CLASSIFICATION
+
+The data is taken from here: https://archive.ics.uci.edu/ml/datasets/Mice+Protein+Expression
+Source:
+  Clara Higuera Department of Software Engineering and Artificial Intelligence, Faculty of Informatics and the Department of Biochemistry and Molecular Biology, Faculty of Chemistry, University Complutense, Madrid, Spain.
+Email: clarahiguera '@' ucm.es
+
+Katheleen J. Gardiner, creator and owner of the protein expression data, is currently with the Linda Crnic Institute for Down Syndrome, Department of Pediatrics, Department of Biochemistry and Molecular Genetics, Human Medical Genetics and Genomics, and Neuroscience Programs, University of Colorado, School of Medicine, Aurora, Colorado, USA.
+Email: katheleen.gardiner '@' ucdenver.edu
+
+Krzysztof J. Cios is currently with the Department of Computer Science, Virginia Commonwealth University, Richmond, Virginia, USA, and IITiS Polish Academy of Sciences, Poland.
+Email: kcios '@' vcu.edu
+
+Data Set Information:
+  The data set consists of the expression levels of 77 proteins/protein modifications that produced detectable signals in the nuclear fraction of cortex.
+There are 38 control mice and 34 trisomic mice (Down syndrome), for a total of 72 mice. In the experiments, 15 measurements were registered of each protein per sample/mouse.
+Therefore, for control mice, there are 38x15, or 570 measurements, and for trisomic mice, there are 34x15, or 510 measurements.
+The dataset contains a total of 1080 measurements per protein. Each measurement can be considered as an independent sample/mouse.
+
+The eight classes of mice are described based on features such as genotype, behavior and treatment. According to genotype, mice can be control or trisomic.
+According to behavior, some mice have been stimulated to learn (context-shock) and others have not (shock-context) and in order to assess the effect of the drug memantine in
+recovering the ability to learn in trisomic mice, some mice have been injected with the drug and others have not.
+
+Classes:
+  c-CS-s: control mice, stimulated to learn, injected with saline (9 mice)
+c-CS-m: control mice, stimulated to learn, injected with memantine (10 mice)
+c-SC-s: control mice, not stimulated to learn, injected with saline (9 mice)
+c-SC-m: control mice, not stimulated to learn, injected with memantine (10 mice)
+
+t-CS-s: trisomy mice, stimulated to learn, injected with saline (7 mice)
+t-CS-m: trisomy mice, stimulated to learn, injected with memantine (9 mice)
+t-SC-s: trisomy mice, not stimulated to learn, injected with saline (9 mice)
+t-SC-m: trisomy mice, not stimulated to learn, injected with memantine (9 mice)
+
+The aim is to identify subsets of proteins that are discriminant between the classes.
+
+```{r}
+nuclear_raw<-readxl::read_xls("Data_Cortex_Nuclear.xls")
+
+head(nuclear_raw)
+dim(nuclear_raw)
+any(is.na(nuclear_raw))# missing values
+summary(nuclear_raw)
+str(nuclear_raw)
+nuclear<-nuclear_raw %>% 
+  select(-MouseID,-Genotype,-Treatment,-Behavior) %>%  #Removing non-predictive and dependent variables
+  rename(Y=class) %>% 
+  mutate(Y=case_when(Y == "c-CS-m" ~ "c1",
+                     Y == "c-CS-s" ~ "c2",
+                     Y == "c-SC-m" ~ "c3",
+                     Y == "c-SC-s" ~ "c4",
+                     Y == "t-CS-m" ~ "c5",
+                     Y == "t-CS-s" ~ "c6",
+                     Y == "t-SC-m" ~ "c7",
+                     Y == "t-SC-s" ~ "c8"),
+         Y=as.factor(Y))
+table(nuclear$Y)
+
+```
+
+
+```{r}
+#Filling NA values with median values
+preproc<-preProcess(nuclear,method = "medianImpute")
+nuclear<-predict(preproc,nuclear)
+
+# Performance metric is accuracy since classes are quite balanced
+# 30% of data is selected for test
+set.seed(123)
+TrainIndex <- sample(1:nrow(nuclear),size = trunc(nrow(nuclear)*0.7),replace = F)
+
+train_nuclear<- nuclear[TrainIndex,] %>% as.data.frame()
+test_nuclear<- nuclear[-TrainIndex,] %>% as.data.frame()
+
+Traindat<-train_nuclear %>% select(-Y) 
+TrainResponse<-train_nuclear$Y
+
+control.param<-trainControl(method = "cv",
+                            number = 10,
+                            allowParallel = F,
+                            returnResamp = "all",
+                            savePredictions = "all",
+                            classProbs = T,
+                            summaryFunction = multiClassSummary)
+
+```
+
+
+1) Glmnet Method
+
+```{r}
+Grid.Matrix= expand.grid(alpha=1,
+                         lambda=c(0.0001,0.001,0.005,0.01,0.05,0.1))
+
+
+set.seed(123)
+fit.glmnet <- caret::train(x = Traindat ,
+                           y = TrainResponse,
+                           method = "glmnet",
+                           trControl = control.param,
+                           tuneGrid = Grid.Matrix,
+                           metric="Accuracy")
+print(fit.glmnet)
+#looks like lambda=0.0001 is good for all performance metrics.
+plot(fit.glmnet$finalModel)
+
+glmnet.preds=predict(fit.glmnet,test_nuclear,type="raw")
+
+conf.mat<-confusionMatrix(table(glmnet.preds,test_nuclear$Y))
+print(conf.mat)
+# Impressive result
+
+glmnet.perf<-conf.mat$overall["Accuracy"]
+print(glmnet.perf)
+```
+
+
+2) Rpart Method
+
+```{r}
+class.task = makeClassifTask(id = "nuclear", data = train_nuclear, target = "Y")
+
+resamp = makeResampleDesc("CV", iters = 10)
+
+lrn = makeLearner("classif.rpart")
+
+control.grid = makeTuneControlGrid() 
+
+
+ps = makeParamSet(
+  makeDiscreteParam("cp", values = c(0.001,0.005,0.01,0.02,0.05,0.1)),
+  makeDiscreteParam("minsplit", values = seq(1,11,length.out = 6))
+)
+
+set.seed(123)
+fit.rpart = tuneParams(lrn, task = class.task, resampling = resamp, 
+                       control = control.grid, par.set = ps, 
+                       measures = list(acc,timetrain))# balanced error rate
+opt.grid = as.data.frame(fit.rpart$opt.path)
+print(opt.grid)
+opt.grid %>% group_by(cp) %>% 
+  summarise(mean(acc.test.mean),.groups="keep") %>% 
+  print()
+opt.grid %>% group_by(minsplit) %>% 
+  summarise(mean(acc.test.mean),.groups="keep") %>% 
+  print()
+
+```
+
+
+```{r}
+#Selected parameters
+print(fit.rpart)
+
+fit.opt.rpart<-rpart(Y~.,data=train_nuclear,method="class",control = rpart.control(minsplit = fit.rpart$x$minsplit,cp = fit.rpart$x$cp))
+#summary(fit.opt.rpart) too long
+rpart.plot(fit.opt.rpart)
+
+#These are the important variables chosen by model
+print(fit.opt.rpart$variable.importance)
+#first 3 variables  (V17,V12,V14) covers 50%
+print(cumsum(fit.opt.rpart$variable.importance))
+barplot(fit.opt.rpart$variable.importance)
+
+rpart.preds=predict(fit.opt.rpart,test_nuclear,type="class")
+
+conf.mat<-confusionMatrix(table(rpart.preds,test_nuclear$Y))
+print(conf.mat)
+
+rpart.perf<-conf.mat$overall["Accuracy"]
+print(rpart.perf)
+```
+
+
+
+```{r}
+sqrt(ncol(Traindat))# mtry is selected around this value
+
+Grid.Matrix= expand.grid(mtry=c(4,6,7,8,10,12))
+control.param$allowParallel<-T
+cl <- makeCluster(8)
+registerDoSNOW(cl)
+set.seed(123)
+fit.rf <- caret::train(x = Traindat ,
+                       y = TrainResponse,
+                       method = "rf",
+                       trControl = control.param,
+                       tuneGrid = Grid.Matrix,
+                       metric="Accuracy",
+                       ntree=500,
+                       nodesize=5)
+stopCluster(cl)
+
+print(fit.rf)
+
+
+```
+For different values of mtry results are not changing so much. 
+
+```{r}
+varImpPlot(fit.rf$finalModel)
+imp<-data.frame(fit.rf$finalModel$importance,var = rownames(fit.rf$finalModel$importance))
+imp %>% arrange(desc(MeanDecreaseGini)) %>% 
+  mutate(csum_gini=cumsum(MeanDecreaseGini)) %>% 
+  print()
+# First 20 variables covers more than 50% of total gini decrease.
+# In this data, every feature has some meaningful information while determining classes.
+
+
+rf.preds<-predict(fit.rf,test_nuclear,type = "raw")
+
+conf.mat<-confusionMatrix(table(rf.preds,test_nuclear$Y))
+print(conf.mat)
+
+
+rf.perf<-conf.mat$overall["Accuracy"]
+print(rf.perf)
+```
+
+
+4) Stochastic Gradient Boosting
+
+```{r}
+#We decreased parameter set since gbm takes so much time for multiclass
+Grid.Matrix= expand.grid(n.trees=seq(20,300,length.out = 3),
+                         interaction.depth=c(5,8,12),
+                         shrinkage=c(0.01,0.03,0.05),
+                         n.minobsinnode=c(10))
+cl <- makeCluster(8)
+registerDoSNOW(cl)
+set.seed(123)
+fit.gbm <- caret::train(x = Traindat ,
+                        y = TrainResponse,
+                        method = "gbm",
+                        trControl = control.param,
+                        tuneGrid = Grid.Matrix,
+                        metric="Accuracy")
+stopCluster(cl)
+print(fit.gbm)
+varImp(fit.gbm)
+#SOD1_N is the most important one for both rf and gbm method
+gbm.preds=predict(fit.gbm,test_nuclear,type = "raw")
+
+conf.mat<-confusionMatrix(table(gbm.preds,test_nuclear$Y))
+print(conf.mat)
+
+
+gbm.perf<-conf.mat$overall["Accuracy"]
+print(gbm.perf)
+
+```
+
+
+
+```{r}
+nuclear_perfs<-cbind(c(glmnet.perf,rpart.perf,rf.perf,gbm.perf),
+                   c(max(fit.glmnet$results$Accuracy),fit.rpart$y["acc.test.mean"],max(fit.rf$results$Accuracy),max(fit.gbm$results$Accuracy)))
+
+
+colnames(nuclear_perfs)<-c("Test","CV")
+rownames(nuclear_perfs)<-c("glmnet","rpart","rf","gbm")
+nuclear_perfs
+```
+Penalized regression comes first for this question also.
+cv result of gbm is not consistent with test result. We may overfit in that one.
+
+
+Final Conclusion:
+High lambda in penalized regression and high complexity parameter leads worse performance because of underfit.
+High n trees and depth in gbm may lead to overfit. We are not suspected of any underfit or overfit in all of the questions except last one.
+We selected our parameters accordingly and tried to be careful.
+
+Gbm is the best performer for 2 questions. Then, lasso regression comes. 3rd one is random forest. Rpart is the worst one.
+So, creating 1 decision rule for whole data is not enough.
+
+
+
+
+
+
+
+
+
