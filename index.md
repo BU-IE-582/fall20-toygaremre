@@ -8,4 +8,6 @@
 
 ##[Here](files/HW4new_rmd-2.html) include my R code document for Homework 4 in html type, you can take a look at the HW4new html file for relevant tasks.
 
+##[Here](files/IE_582_Project_Ozan_Mert_Toygar.html) include our team project document in html type, you can take a look at the project html file for relevant tasks.
+
 
